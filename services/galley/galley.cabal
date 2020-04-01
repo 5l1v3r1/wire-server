@@ -4,7 +4,7 @@ cabal-version: 1.12
 --
 -- see: https://github.com/sol/hpack
 --
--- hash: c1a1dbd266b398854b1b40998b991421db8773de06612f265b49ac3da4fd7adc
+-- hash: e4bd99141397259dc215eed9cb0f28792f335fccb57986efde1c3f4e4bfa5f19
 
 name:           galley
 version:        0.83.0
@@ -50,6 +50,7 @@ library
       Galley.External
       Galley.External.LegalHoldService
       Galley.Intra.Client
+      Galley.Intra.Federator
       Galley.Intra.Journal
       Galley.Intra.Push
       Galley.Intra.Spar
