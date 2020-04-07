@@ -280,9 +280,7 @@ testCreateOne2OneWithMembers ::
   TestM ()
 testCreateOne2OneWithMembers (rolePermissions -> perms) = do
   c <- view tsCannon
-  owner <- Util.randomUser
-  tid <- Util.createTeamInternal "foo" owner
-  assertQueue "create team" tActivate
+  (owner, tid) <- Util.createBindingTeam
   mem1 <- newTeamMember' perms <$> Util.randomUser
   WS.bracketR c (mem1 ^. userId) $ \wsMem1 -> do
     Util.addTeamMemberInternal tid mem1
@@ -339,14 +337,13 @@ testAddTeamMemberCheckBound = do
 testAddTeamMemberInternal :: TestM ()
 testAddTeamMemberInternal = do
   c <- view tsCannon
-  owner <- Util.randomUser
-  tid <- Util.createNonBindingTeam "foo" owner []
+  (owner, tid) <- createBindingTeam
   let p1 = Util.symmPermissions [GetBilling] -- permissions are irrelevant on internal endpoint
   mem1 <- newTeamMember' p1 <$> Util.randomUser
   WS.bracketRN c [owner, mem1 ^. userId] $ \[wsOwner, wsMem1] -> do
     Util.addTeamMemberInternal tid mem1
     liftIO . void $ mapConcurrently (checkJoinEvent tid (mem1 ^. userId)) [wsOwner, wsMem1]
-    assertQueue "tem member join" $ tUpdate 2 [owner]
+    assertQueue "team member join" $ tUpdate 2 [owner]
   void $ Util.getTeamMemberInternal tid (mem1 ^. userId)
   where
     checkJoinEvent tid usr w = WS.assertMatch_ timeout w $ \notif -> do
@@ -408,14 +405,20 @@ testRemoveBindingTeamMember :: Bool -> TestM ()
 testRemoveBindingTeamMember ownerHasPassword = do
   g <- view tsGalley
   c <- view tsCannon
-  owner <- Util.randomUser' ownerHasPassword
-  tid <- Util.createTeamInternal "foo" owner
-  assertQueue "create team" tActivate
+  -- Owner who creates the team must have an email, This is why we run all tests with a second
+  -- owner
+  (ownerWithPassword, tid) <- Util.createBindingTeam
+  ownerMem <-
+    if ownerHasPassword
+      then Util.addUserToTeam ownerWithPassword tid
+      else Util.addUserToTeamWithSSO tid
+  Util.makeOwner ownerWithPassword ownerMem tid
+  let owner = view userId ownerMem
+  ensureQueueEmpty
+  refreshIndex
   mext <- Util.randomUser
-  let p1 = Util.symmPermissions [DoNotUseDeprecatedAddRemoveConvMember]
-  mem1 <- newTeamMember' p1 <$> Util.randomUser
-  Util.addTeamMemberInternal tid mem1
-  assertQueue "team member join" $ tUpdate 2 [owner]
+  mem1 <- Util.addUserToTeam owner tid
+  assertQueue "team member join" $ tUpdate 3 [ownerWithPassword, owner]
   Util.connectUsers owner (singleton mext)
   cid1 <- Util.createTeamConv owner tid [(mem1 ^. userId), mext] (Just "blaa") Nothing Nothing
   when ownerHasPassword $ do
@@ -477,7 +480,7 @@ testRemoveBindingTeamMember ownerHasPassword = do
           === statusCode
     checkTeamMemberLeave tid (mem1 ^. userId) wsOwner
     checkConvMemberLeaveEvent cid1 (mem1 ^. userId) wsMext
-    assertQueue "team member leave" $ tUpdate 1 [owner]
+    assertQueue "team member leave" $ tUpdate 1 [ownerWithPassword, owner]
     WS.assertNoEvent timeout [wsMext]
     -- Mem1 is now gone from Wire
     Util.ensureDeletedState True owner (mem1 ^. userId)
@@ -550,18 +553,19 @@ testAddTeamConvWithRole = do
 
 testAddTeamConvAsExternalPartner :: TestM ()
 testAddTeamConvAsExternalPartner = do
-  owner <- Util.randomUser
-  memMember1 <- newTeamMember' (rolePermissions RoleMember) <$> Util.randomUser
-  memMember2 <- newTeamMember' (rolePermissions RoleMember) <$> Util.randomUser
-  memExternalPartner <- newTeamMember' (rolePermissions RoleExternalPartner) <$> Util.randomUser
+  (owner, tid) <- Util.createBindingTeam
+  memMember1 <- Util.addUserToTeamWithRole (Just RoleMember) owner tid
+  assertQueue ("team member join 2") $ tUpdate 2 [owner]
+  refreshIndex
+  memMember2 <- Util.addUserToTeamWithRole (Just RoleMember) owner tid
+  assertQueue ("team member join 3") $ tUpdate 3 [owner]
+  refreshIndex
+  memExternalPartner <- Util.addUserToTeamWithRole (Just RoleExternalPartner) owner tid
+  assertQueue ("team member join 4") $ tUpdate 4 [owner]
+  refreshIndex
   Util.connectUsers
     owner
     (list1 (memMember1 ^. userId) [memExternalPartner ^. userId, memMember2 ^. userId])
-  tid <- Util.createTeamInternal "foo" owner
-  assertQueue "create team" tActivate
-  forM_ [(2, memMember1), (3, memMember2), (4, memExternalPartner)] $ \(i, mem) -> do
-    Util.addTeamMemberInternal tid mem
-    assertQueue ("team member join #" ++ show i) $ tUpdate i [owner]
   let acc = Just $ Set.fromList [InviteAccess, CodeAccess]
   Util.createTeamConvAccessRaw
     (memExternalPartner ^. userId)
